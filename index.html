@@ -199,7 +199,7 @@
             <select id="subjectSelect" aria-label="Choose subject">
               <option>Physics</option><option>Chemistry</option><option>Mathematics</option><option>Biology</option><option>English</option><option>Other</option>
             </select>
-            <input id="durationInput" type="number" min="5" max="120" value="25" aria-label="Focus minutes" title="Focus minutes">
+            <input id="durationInput" type="number" min="5" value="25" aria-label="Focus minutes" title="Focus minutes">
           </div>
           <div class="timer-note">Set a focus duration in minutes. XP is awarded when you complete the session, not when you reset it.</div>
         </div>
@@ -394,7 +394,7 @@
   }
   function stopInterval() { if(interval){clearInterval(interval);interval=null;} running=false; }
   function resetTimer() {
-    stopInterval(); const mins=clamp(parseInt($("durationInput").value,10)||25,5,120);
+    stopInterval(); const mins=Math.max(5,parseInt($("durationInput").value,10)||25);
     $("durationInput").value=mins; timerSeconds=mins*60; initialSeconds=timerSeconds; startedAt=null; setTimerDisplay();
   }
   function clamp(n,min,max){return Math.min(max,Math.max(min,n));}
