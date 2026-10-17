@@ -420,7 +420,16 @@
   }
   $("startBtn").addEventListener("click",startTimer);
   $("resetBtn").addEventListener("click",()=>{resetTimer();toast("Timer reset.");});
-  $("durationInput").addEventListener("change",resetTimer);
+  const savedDuration = localStorage.getItem("studyquestDuration");
+if (savedDuration) {
+  $("durationInput").value = savedDuration;
+  resetTimer();
+}
+
+$("durationInput").addEventListener("change", () => {
+  localStorage.setItem("studyquestDuration", $("durationInput").value);
+  resetTimer();
+});
   $("subjectSelect").addEventListener("change",()=>{state.timerSubject=$("subjectSelect").value;save();});
   $("addMissionBtn").addEventListener("click",()=>{
     const input=$("missionInput"), title=input.value.trim();
