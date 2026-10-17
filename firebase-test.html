@@ -1,0 +1,207 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>StudyQuest Firebase Test</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      max-width: 480px;
+      margin: 35px auto;
+      padding: 20px;
+      background: #f4f6ff;
+      color: #202442;
+    }
+    main {
+      background: white;
+      padding: 22px;
+      border-radius: 16px;
+    }
+    input, button {
+      box-sizing: border-box;
+      width: 100%;
+      padding: 13px;
+      margin: 7px 0;
+      border-radius: 9px;
+      font-size: 16px;
+    }
+    input { border: 1px solid #ccc; }
+    button {
+      border: 0;
+      background: #5046e5;
+      color: white;
+      font-weight: bold;
+    }
+    button:disabled { opacity: .5; }
+    #status {
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+      line-height: 1.5;
+    }
+  </style>
+</head>
+<body>
+<main>
+  <h1>StudyQuest</h1>
+  <h2>Firebase connection test</h2>
+  <p>This is a separate test page, not the main app.</p>
+
+  <input id="email" type="email"
+    placeholder="Test email address" autocomplete="email">
+  <input id="password" type="password"
+    placeholder="Password (at least 6 characters)"
+    autocomplete="current-password">
+
+  <button id="signup">Create test account</button>
+  <button id="login">Log in</button>
+  <button id="save" disabled>Save test record</button>
+  <button id="read" disabled>Read test record</button>
+  <button id="logout" disabled>Log out</button>
+
+  <p id="status">Connecting to Firebase...</p>
+</main>
+
+<script type="module">
+  import { initializeApp }
+    from "https://www.gstatic.com/firebasejs/13.0.0/firebase-app.js";
+
+  import {
+    getAuth,
+    createUserWithEmailAndPassword,
+    signInWithEmailAndPassword,
+    signOut,
+    onAuthStateChanged
+  } from "https://www.gstatic.com/firebasejs/13.0.0/firebase-auth.js";
+
+  import {
+    getFirestore,
+    doc,
+    setDoc,
+    getDoc,
+    serverTimestamp
+  } from "https://www.gstatic.com/firebasejs/13.0.0/firebase-firestore.js";
+
+  const firebaseConfig = {
+    apiKey: "AIzaSyA9iZO7RenlzQjtG0LboBFdOo9zj0R-PYA",
+    authDomain: "study-quest-20f97.firebaseapp.com",
+    projectId: "study-quest-20f97",
+    storageBucket: "study-quest-20f97.firebasestorage.app",
+    messagingSenderId: "816674746718",
+    appId: "1:816674746718:web:ed82b0464d85e1070b5fcf"
+  };
+
+  const app = initializeApp(firebaseConfig);
+  const auth = getAuth(app);
+  const db = getFirestore(app);
+
+  const $ = id => document.getElementById(id);
+  const status = message => $("status").textContent = message;
+
+  function friendlyError(error) {
+    const messages = {
+      "auth/email-already-in-use":
+        "This email already has an account. Try Log in.",
+      "auth/invalid-email": "Enter a valid email address.",
+      "auth/weak-password": "Use a stronger password.",
+      "auth/invalid-credential":
+        "Email or password is incorrect.",
+      "auth/network-request-failed":
+        "Network error. Check your internet connection.",
+      "permission-denied":
+        "Firestore denied access. We need to check the rules."
+    };
+    return messages[error.code] ||
+      `${error.code || "Error"}: ${error.message}`;
+  }
+
+  function showError(error) {
+    console.error(error);
+    status(friendlyError(error));
+  }
+
+  $("signup").onclick = async () => {
+    try {
+      status("Creating account...");
+      await createUserWithEmailAndPassword(
+        auth, $("email").value.trim(), $("password").value
+      );
+    } catch (error) {
+      showError(error);
+    }
+  };
+
+  $("login").onclick = async () => {
+    try {
+      status("Logging in...");
+      await signInWithEmailAndPassword(
+        auth, $("email").value.trim(), $("password").value
+      );
+    } catch (error) {
+      showError(error);
+    }
+  };
+
+  $("save").onclick = async () => {
+    try {
+      const user = auth.currentUser;
+      if (!user) return status("Please log in first.");
+
+      status("Saving test record...");
+      await setDoc(doc(db, "users", user.uid), {
+        firebaseTest: {
+          message: "StudyQuest cloud test successful",
+          updatedAt: serverTimestamp()
+        }
+      }, { merge: true });
+
+      status("Test record saved successfully!");
+    } catch (error) {
+      showError(error);
+    }
+  };
+
+  $("read").onclick = async () => {
+    try {
+      const user = auth.currentUser;
+      if (!user) return status("Please log in first.");
+
+      status("Reading test record...");
+      const snapshot = await getDoc(doc(db, "users", user.uid));
+
+      if (snapshot.exists() && snapshot.data().firebaseTest) {
+        status("Record read successfully!\n" +
+          snapshot.data().firebaseTest.message);
+      } else {
+        status("No test record found yet. Tap Save test record first.");
+      }
+    } catch (error) {
+      showError(error);
+    }
+  };
+
+  $("logout").onclick = async () => {
+    try {
+      await signOut(auth);
+    } catch (error) {
+      showError(error);
+    }
+  };
+
+  onAuthStateChanged(auth, user => {
+    $("save").disabled = !user;
+    $("read").disabled = !user;
+    $("logout").disabled = !user;
+    $("signup").disabled = !!user;
+    $("login").disabled = !!user;
+
+    if (user) {
+      status("Logged in successfully!\nAccount: " + user.email);
+    } else {
+      status("Not logged in. Create a test account or log in.");
+    }
+  });
+</script>
+</body>
+</html>
