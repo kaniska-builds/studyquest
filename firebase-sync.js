@@ -1,4 +1,3 @@
-
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
 import {
   getAuth,
@@ -11,8 +10,7 @@ import {
   getFirestore,
   doc,
   getDoc,
-  setDoc,
-  onSnapshot
+  setDoc
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 
 const firebaseConfig = {
@@ -35,16 +33,15 @@ const KEYS = {
 };
 
 let currentUser = null;
-let cloudReady = false;
 let busy = false;
-let applyingCloud = false;
-let lastLocal = "";
-let unsubscribeCloud = null;
+let cloudReady = false;
+let lastSyncedSignature = null;
 let pendingCloud = null;
+let autoSaveTimer = null;
 
 const $ = id => document.getElementById(id);
 
-function bundle() {
+function readDeviceBundle() {
   return {
     state: localStorage.getItem(KEYS.state),
     duration: localStorage.getItem(KEYS.duration),
@@ -57,26 +54,34 @@ function signature(data) {
 }
 
 function status(message) {
-  $("sq-cloud-status").textContent = message;
+  const el = $("sq-cloud-status");
+  if (el) el.textContent = message;
 }
 
 function setBusy(value) {
   busy = value;
-  ["sq-signin", "sq-register", "sq-sync-now", "sq-signout",
-   "sq-use-cloud", "sq-use-device"].forEach(id => {
+  [
+    "sq-signin", "sq-register", "sq-sync-now", "sq-signout",
+    "sq-use-cloud", "sq-use-device"
+  ].forEach(id => {
     const el = $(id);
     if (el) el.disabled = value;
   });
 }
 
-function applyBundle(data) {
-  Object.entries(KEYS).forEach(([name, key]) => {
-    if (data[name] == null) localStorage.removeItem(key);
-    else localStorage.setItem(key, data[name]);
+function applyDeviceBundle(data) {
+  Object.entries(KEYS).forEach(([name, storageKey]) => {
+    if (data[name] === null || data[name] === undefined) {
+      localStorage.removeItem(storageKey);
+    } else {
+      localStorage.setItem(storageKey, data[name]);
+    }
   });
 }
 
 function makePanel() {
+  if ($("studyquest-cloud-account")) return;
+
   const panel = document.createElement("section");
   panel.id = "studyquest-cloud-account";
   panel.style.cssText =
@@ -102,132 +107,149 @@ function makePanel() {
       <button id="sq-sync-now" type="button">Check / sync now</button>
       <button id="sq-signout" type="button">Sign out</button>
     </div>
-    <div id="sq-conflict" hidden style="margin-top:12px;padding:12px;border:1px solid #777;border-radius:10px">
-      <p id="sq-conflict-message">Saved data differs. Which version should be kept?</p>
+    <div id="sq-conflict" hidden
+      style="margin-top:12px;padding:12px;border:1px solid #777;border-radius:10px">
+      <p id="sq-conflict-message">
+        Device and cloud data differ. Choose which version to keep.
+      </p>
       <button id="sq-use-cloud" type="button">Use cloud data</button>
       <button id="sq-use-device" type="button">Keep this device's data</button>
     </div>
     <p style="font-size:12px;color:#aab3c5">
-      Choose carefully when data differs. Your password stays private.
+      If your data differs, choose carefully. Your password stays private.
     </p>`;
-
-  const style = document.createElement("style");
+    const style = document.createElement("style");
   style.textContent =
     "#studyquest-cloud-account button{padding:10px 12px;border:0;" +
     "border-radius:8px;margin:4px;cursor:pointer;font-weight:600}" +
-    "#studyquest-cloud-account button:disabled{opacity:.5}";
+    "#studyquest-cloud-account button:disabled{opacity:.5}" +
+    "#studyquest-cloud-account input{border-radius:8px;border:1px solid #888}";
   document.head.appendChild(style);
   document.body.appendChild(panel);
 }
 
-makePanel();
-
-function showConflict(data, message) {
-  pendingCloud = data;
+function showConflict(cloud, message) {
+  pendingCloud = cloud;
+  cloudReady = false;
   $("sq-conflict").hidden = false;
   $("sq-conflict-message").textContent = message;
-  status("Choose which saved progress to keep.");
+  status("Your device and cloud have different data. Choose which to keep.");
 }
 
-async function writeCloud(data) {
+async function fetchCloudBundle() {
   if (!currentUser) throw new Error("Please sign in again.");
+  const snap = await getDoc(doc(db, "users", currentUser.uid));
+  if (!snap.exists()) return null;
+  const data = snap.data();
+  return data && data.studyQuestSync ? data.studyQuestSync : null;
+}
 
+async function writeCloudBundle(data) {
+  if (!currentUser) throw new Error("Please sign in again.");
   await setDoc(doc(db, "users", currentUser.uid), {
     studyQuestSync: data,
     studyQuestSyncUpdatedAt: new Date().toISOString()
   }, { merge: true });
-
-  lastLocal = signature(data);
+  lastSyncedSignature = signature(data);
 }
 
 async function syncNow() {
   if (!currentUser || busy) return;
-
   setBusy(true);
   cloudReady = false;
+  $("sq-conflict").hidden = true;
 
   try {
-    const ref = doc(db, "users", currentUser.uid);
-    const snap = await getDoc(ref);
-    const cloud = snap.exists() ? snap.data().studyQuestSync : null;
-    const device = bundle();
+    const device = readDeviceBundle();
+    const cloud = await fetchCloudBundle();
 
     if (!cloud) {
-      await writeCloud(device);
+      await writeCloudBundle(device);
+      lastSyncedSignature = signature(device);
       cloudReady = true;
       status("✅ First cloud backup created from this device.");
-      listenForCloud();
       return;
     }
 
-    if (signature(cloud) === signature(device)) {
-      lastLocal = signature(device);
+    const deviceSig = signature(device);
+    const cloudSig = signature(cloud);
+
+    if (deviceSig === cloudSig) {
+      lastSyncedSignature = deviceSig;
       cloudReady = true;
-      status("✅ Cloud and device data match.");
-      listenForCloud();
+      status("✅ Device and cloud data match.");
       return;
     }
 
     showConflict(
       cloud,
-      "Cloud and device data are different. Choose which version to keep."
+      "Device and cloud data are different. Choose which version to keep."
     );
   } catch (error) {
-    status("Sync failed: " + error.message);
+    status("Sync failed: " + (error?.message || "Unknown error"));
+  } finally {
+    setBusy(false);
+  }
+}
+async function keepDeviceData() {
+  if (!currentUser || busy) return;
+  setBusy(true);
+  cloudReady = false;
+
+  try {
+    const device = readDeviceBundle();
+    const latestCloud = await fetchCloudBundle();
+
+    if (
+      latestCloud &&
+      pendingCloud &&
+      signature(latestCloud) !== signature(pendingCloud)
+    ) {
+      showConflict(
+        latestCloud,
+        "Cloud data changed again. Review the latest cloud version before choosing."
+      );
+      return;
+    }
+
+    await writeCloudBundle(device);
+    pendingCloud = null;
+    $("sq-conflict").hidden = true;
+    lastSyncedSignature = signature(device);
+    cloudReady = true;
+    status("✅ This device's data is saved to the cloud.");
+  } catch (error) {
+    status("Cloud save failed: " + (error?.message || "Unknown error"));
   } finally {
     setBusy(false);
   }
 }
 
-function listenForCloud() {
-  if (unsubscribeCloud) unsubscribeCloud();
-  if (!currentUser) return;
+function useCloudData() {
+  if (!pendingCloud) return;
 
-  unsubscribeCloud = onSnapshot(
-    doc(db, "users", currentUser.uid),
-    snapshot => {
-      if (!snapshot.exists() || !cloudReady || applyingCloud || busy) return;
-
-      const cloud = snapshot.data().studyQuestSync;
-      if (!cloud) return;
-
-      const cloudSig = signature(cloud);
-      const deviceSig = signature(bundle());
-
-      if (cloudSig === deviceSig) {
-        lastLocal = deviceSig;
-        return;
-      }
-
-      if (deviceSig !== lastLocal) {
-        showConflict(
-          cloud,
-          "Both cloud and this device have changes. Choose which to keep."
-        );
-        cloudReady = false;
-        return;
-      }
-
-      applyingCloud = true;
-      applyBundle(cloud);
-      lastLocal = signature(bundle());
-      applyingCloud = false;
-      status("☁️ New cloud progress loaded. Refreshing the page…");
-      setTimeout(() => location.reload(), 500);
-    },
-    error => status("Cloud listener error: " + error.message)
-  );
+  try {
+    applyDeviceBundle(pendingCloud);
+    lastSyncedSignature = signature(readDeviceBundle());
+    pendingCloud = null;
+    $("sq-conflict").hidden = true;
+    cloudReady = true;
+    status("☁️ Cloud data loaded. Refreshing StudyQuest…");
+    setTimeout(() => location.reload(), 500);
+  } catch (error) {
+    cloudReady = false;
+    status("Could not apply cloud data: " + (error?.message || "Unknown error"));
+  }
 }
 
-async function authenticate(create) {
+async function authenticate(createAccount) {
   const email = $("sq-email").value.trim();
   const password = $("sq-password").value;
 
   if (!email || !password) {
-    status("Enter your email and password.");
+    status("Enter your email address and password.");
     return;
   }
-
   if (password.length < 6) {
     status("Password must be at least 6 characters.");
     return;
@@ -235,97 +257,91 @@ async function authenticate(create) {
 
   setBusy(true);
   try {
-    if (create) {
+    if (createAccount) {
       await createUserWithEmailAndPassword(auth, email, password);
     } else {
       await signInWithEmailAndPassword(auth, email, password);
     }
   } catch (error) {
-    status(error.message);
+    status(error?.message || "Could not sign in.");
   } finally {
     setBusy(false);
   }
 }
+function startAutoSave() {
+  if (autoSaveTimer) clearInterval(autoSaveTimer);
+
+  autoSaveTimer = setInterval(async () => {
+    if (!currentUser || !cloudReady || busy) return;
+
+    const device = readDeviceBundle();
+    const deviceSig = signature(device);
+    if (deviceSig === lastSyncedSignature) return;
+
+    busy = true;
+    try {
+      const cloud = await fetchCloudBundle();
+
+      if (cloud && signature(cloud) !== lastSyncedSignature) {
+        showConflict(
+          cloud,
+          "Cloud data may have changed on another device. Choose which version to keep."
+        );
+        return;
+      }
+
+      await writeCloudBundle(device);
+      lastSyncedSignature = deviceSig;
+      status("✅ Progress saved to your cloud account.");
+    } catch (error) {
+      status("Cloud save failed: " + (error?.message || "Try Check / sync now."));
+    } finally {
+      busy = false;
+    }
+  }, 10000);
+}
+
+makePanel();
 
 $("sq-signin").onclick = () => authenticate(false);
 $("sq-register").onclick = () => authenticate(true);
+$("sq-sync-now").onclick = syncNow;
+$("sq-use-cloud").onclick = useCloudData;
+$("sq-use-device").onclick = keepDeviceData;
 
 $("sq-signout").onclick = async () => {
-  if (unsubscribeCloud) unsubscribeCloud();
-  unsubscribeCloud = null;
   cloudReady = false;
-  await signOut(auth);
-};
-
-$("sq-sync-now").onclick = syncNow;
-
-$("sq-use-cloud").onclick = () => {
-  if (!pendingCloud) return;
-
-  applyingCloud = true;
-  applyBundle(pendingCloud);
-  lastLocal = signature(bundle());
   pendingCloud = null;
   $("sq-conflict").hidden = true;
-  applyingCloud = false;
-  cloudReady = true;
-  status("Cloud data loaded. Refreshing StudyQuest…");
-  setTimeout(() => location.reload(), 500);
-};
 
-$("sq-use-device").onclick = async () => {
-  if (!currentUser || busy) return;
-
-  setBusy(true);
   try {
-    await writeCloud(bundle());
-    pendingCloud = null;
-    $("sq-conflict").hidden = true;
-    cloudReady = true;
-    status("✅ This device's data was saved to the cloud.");
-    listenForCloud();
+    await signOut(auth);
   } catch (error) {
-    status("Cloud save failed: " + error.message);
-  } finally {
-    setBusy(false);
+    status("Sign-out failed: " + (error?.message || "Unknown error"));
   }
 };
 
 onAuthStateChanged(auth, async user => {
   currentUser = user;
-
-  $("sq-auth-fields").hidden = !!user;
-  $("sq-signed-in").hidden = !user;
-
-  if (unsubscribeCloud) unsubscribeCloud();
-  unsubscribeCloud = null;
   cloudReady = false;
   pendingCloud = null;
+  $("sq-auth-fields").hidden = !!user;
+  $("sq-signed-in").hidden = !user;
   $("sq-conflict").hidden = true;
+
+  if (autoSaveTimer) {
+    clearInterval(autoSaveTimer);
+    autoSaveTimer = null;
+  }
 
   if (!user) {
     status("Sign in to back up your progress.");
     return;
   }
 
-  $("sq-account-email").textContent = "Signed in as " + user.email;
+  $("sq-account-email").textContent = "Signed in as " + (user.email || "");
   status("Checking cloud backup…");
   await syncNow();
+
+  if (cloudReady) startAutoSave();
 });
-
-setInterval(async () => {
-  if (!currentUser || !cloudReady || busy || applyingCloud) return;
-
-  const current = bundle();
-  const currentSig = signature(current);
-
-  if (currentSig !== lastLocal) {
-    try {
-      await writeCloud(current);
-      status("✅ Progress saved to your cloud account.");
-    } catch (error) {
-      status("Cloud save failed: " + error.message);
-    }
-  }
-}, 5000);
-          
